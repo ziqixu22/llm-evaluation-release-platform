@@ -2,161 +2,258 @@
 
 ## 1. Business problem
 
-A company wants to release a new chatbot/copilot model. The naive question is: "Which model has the best benchmark score?"
+A company is deciding whether an automated LLM judge can help evaluate a chatbot/copilot release.
 
-The real business question is broader:
+The naive question is:
 
-- Do users actually prefer the new model?
-- Can an automated LLM judge replace expensive human evaluation?
-- Is the judge biased by response position or verbosity?
-- Does judge reliability degrade on harder/multi-turn cases?
-- Which slices can be auto-approved, and which need human review?
+> Which judge has the highest accuracy?
 
-This project treats **evaluation itself as a measurement system**.
+The real product question is:
 
-## 2. Why human preference is the outcome
+> Which evaluation decisions are reliable enough to automate, and which should be escalated to humans?
 
-For an interactive assistant, product success is ultimately tied to whether users prefer the response, not whether an internal evaluator produces a high score.
+That means the project must evaluate **both correctness and robustness**.
 
-LMArena provides real pairwise user preferences across many production-grade models. Each row is a head-to-head comparison between two responses to the same prompt.
+## 2. Why human preference is the ground truth layer
 
-## 3. Pairwise preference metrics
+For interactive AI products, the ultimate quality signal is whether users prefer one response over another.
 
-For each model, count wins, losses, and ties across battles. A tie-adjusted win rate is:
+The project uses real pairwise human preference outcomes with three possible labels:
 
-`(wins + 0.5 * ties) / total battles`
+- response A wins
+- response B wins
+- tie
 
-This is easy to interpret but can be confounded because models do not face identical opponents.
+This lets the evaluator be tested against the outcome it is supposed to approximate.
 
-## 4. Bradley-Terry ranking
+## 3. Product-quality layer
 
-The Bradley-Terry model estimates latent model strength from pairwise comparisons while accounting for opponent strength.
+The LMArena preference dataset is used to understand model-level preference behavior.
 
-Conceptually:
+For each model we can compute:
 
-`P(model i beats model j) = sigmoid(skill_i - skill_j)`
+`tie-adjusted win rate = (wins + 0.5 × ties) / total battles`
 
-The project fits this as a pairwise logistic model after filtering models with too little data.
+This is interpretable, but opponents differ across models.
 
-## 5. Position-bias audit
+So the project also uses a Bradley-Terry model:
 
-If model A wins much more than 50% merely because its answer appears first, the measurement process is biased.
+`P(i beats j) = sigmoid(skill_i - skill_j)`
 
-We therefore compute the non-tie model-A win rate. A large deviation from 50% is a warning signal.
+Bradley-Terry estimates latent relative strength while accounting for opponent quality.
 
-## 6. Verbosity-bias audit
+## 4. Why an LLM judge needs its own validation
 
-LLM judges and humans may prefer longer answers even when length does not imply quality.
+Using another LLM as an evaluator is attractive because it is fast and scalable.
 
-The project measures how often the longer response wins among comparisons where response lengths differ.
+But the evaluator can fail because of:
 
-This is not proof of causal verbosity bias, but it is a useful measurement-risk diagnostic.
+- factual mistakes
+- preference differences from humans
+- position bias
+- verbosity bias
+- unstable decisions
+- overconfidence
 
-## 7. Why validate LLM-as-a-Judge?
+So an automated judge cannot be treated as an oracle.
 
-Human evaluation is expensive and slow. Automated judges are attractive because they scale cheaply.
+## 5. Counterfactual A/B reversal
 
-But before using a judge to approve model releases, we need to know how closely it tracks expert humans.
+The Chatbot Arena LLM Judges dataset provides two predictions for the same example:
 
-MT-Bench contains expert human preferences and GPT-4 pairwise judgments over the same model comparisons.
+1. original presentation: answer A, then answer B
+2. reversed presentation: answer B, then answer A
 
-## 8. Human majority label
+After the reversed prediction is mapped back to the original A/B frame, a robust judge should usually make the same decision.
 
-Multiple experts may evaluate the same pair. We aggregate human judgments into a majority label before comparing them with GPT-4.
+Example:
 
-If the human vote is tied, the aggregate label becomes a tie rather than pretending there is certainty.
+```text
+Original order
+A = response X
+B = response Y
+Judge → A wins
 
-## 9. Agreement
+Reversed order
+A = response Y
+B = response X
+Judge → B wins
+```
 
-Exact agreement is:
+After mapping the reversed decision back to the original frame, both say **response X wins**.
 
-`number of GPT-4 decisions matching human majority / aligned comparisons`
+That is position-consistent.
 
-This is intuitive but does not account for agreement that could occur by chance.
+## 6. Position consistency
 
-## 10. Cohen's kappa
+The project measures:
 
-Cohen's kappa adjusts observed agreement for chance agreement.
+`position consistency = fraction of examples where original and reversed decisions agree after canonicalization`
 
-Roughly:
+This is different from accuracy.
 
-- near 1: very strong agreement
-- near 0: little beyond chance
-- below 0: systematic disagreement
+A judge can be:
 
-The project reports both agreement and kappa because a single metric is not enough.
+- accurate but unstable;
+- stable but systematically wrong;
+- both accurate and stable;
+- neither.
 
-## 11. Bootstrap confidence interval
+That is why one metric is not enough.
 
-The observed agreement is only an estimate from a finite sample.
+## 7. Symmetric prediction
 
-We repeatedly resample aligned judgments and recompute agreement to obtain a 95% bootstrap confidence interval.
+To reduce dependence on presentation order, the platform averages the probability vector from:
 
-This answers: "How uncertain is our estimate of judge reliability?"
+- original presentation
+- canonicalized reversed presentation
 
-## 12. Slice reliability
+For each example:
 
-Aggregate agreement can hide weak subgroups. The project therefore evaluates reliability by conversation turn.
+`symmetric_probability = (p_original + p_reversed_canonical) / 2`
 
-If turn-2 reliability is materially worse than turn-1, multi-turn evaluation should remain human-reviewed even if overall agreement looks strong.
+The final symmetric label is the class with the highest averaged probability.
 
-## 13. Release gate
+This is a simple form of counterfactual robustness averaging.
 
-The release gate is a business rule, not just a metric report.
+## 8. Accuracy and Cohen's kappa
 
-Example thresholds:
+Accuracy measures exact agreement with human labels.
 
-- agreement >= 80%
-- kappa >= 0.60
-- enough sample size per slice
+Cohen's kappa additionally adjusts for chance agreement.
 
-If every required slice passes, automated evaluation can be used as a release gate. Otherwise failing slices are routed to human review.
+Because the task has three classes — A, B, tie — both are useful.
 
-## 14. Business loop
+The project reports:
 
-The complete loop is:
+- original accuracy
+- reversed accuracy
+- symmetric accuracy
+- symmetric Cohen's kappa
 
-1. Human preference defines product quality.
-2. Pairwise analysis ranks models.
-3. Bias audits test evaluation validity.
-4. Human-vs-judge analysis estimates automation reliability.
-5. Confidence intervals quantify uncertainty.
-6. Slice analysis finds where automation breaks.
-7. Release policy combines the evidence into PASS vs HUMAN REVIEW.
-8. New model/prompt versions can be evaluated through the same regression framework.
+## 9. Bootstrap confidence interval
 
-## 15. Why this is not a toy project
+A measured accuracy is still a sample estimate.
 
-It does not stop at "Model A scored 82%."
+The platform repeatedly resamples the evaluation examples and recalculates accuracy to obtain a bootstrap 95% confidence interval.
 
-It includes:
+This communicates uncertainty instead of pretending one point estimate is exact.
 
-- real user outcome data
-- expert human labels
-- automated judge validation
-- statistical uncertainty
-- bias diagnostics
-- pairwise ranking
-- slice analysis
-- policy thresholds
-- automated CI/full-data workflows
-- a concrete release decision
+## 10. Human-in-the-loop routing
 
-## 16. 60-second interview structure
+The project does not force every evaluation into automation.
 
-> I built an LLM evaluation and release-decision platform around a practical question: whether an AI team can trust an automated judge enough to gate model releases. I used LMArena human preferences as the product-quality outcome and estimated model quality with tie-adjusted preference rates and Bradley-Terry rankings, while auditing position and verbosity effects. Then I used MT-Bench expert labels to validate GPT-4 as an LLM judge, measuring exact agreement, Cohen's kappa, bootstrap confidence intervals, and reliability by conversation turn. Finally I converted those metrics into a release policy: high-confidence slices can be automated, while low-agreement or under-sampled slices are routed to human review. The key lesson is that an evaluator is itself a model and needs validation, uncertainty estimates, bias checks, and monitoring before it can make production decisions.
+A case is eligible for automated evaluation only when:
 
-## 17. Questions to prepare for
+1. original and reversed predictions are directionally consistent; and
+2. the symmetric prediction exceeds the configured confidence threshold.
 
-- Why use human preference rather than benchmark accuracy as the product outcome?
-- What problem does Bradley-Terry solve?
-- Why can raw win rate be misleading?
+Otherwise:
+
+`route → human review`
+
+This creates two additional business metrics:
+
+### Automation coverage
+
+`automated cases / all cases`
+
+### Automated-case accuracy
+
+`human agreement among cases approved for automation`
+
+These two metrics reveal the central business trade-off:
+
+> Higher confidence thresholds may improve reliability but reduce automation coverage.
+
+## 11. Release gate
+
+The release gate combines several checks:
+
+- minimum symmetric accuracy
+- minimum position consistency
+- minimum automated-case accuracy
+- minimum automation coverage
+
+If a candidate judge fails the policy, the system returns:
+
+`HUMAN_REVIEW_REQUIRED`
+
+instead of silently approving the evaluator.
+
+The exact thresholds are configurable in `configs/release_policy.json` and should be treated as product-policy choices, not universal scientific constants.
+
+## 12. Complete business loop
+
+The project can be explained as:
+
+```text
+Human preferences
+↓
+What users value
+↓
+Automated LLM judge
+↓
+Does it match humans?
+↓
+Does it survive A/B reversal?
+↓
+How confident is the symmetric decision?
+↓
+Automate stable/high-confidence cases
+↓
+Escalate unstable/uncertain cases
+↓
+Release gate
+```
+
+## 13. Why this is not a toy project
+
+A toy project might report one accuracy number.
+
+This project includes:
+
+- real human preference labels
+- pairwise model-quality analysis
+- multiple automated judges
+- position-bias counterfactuals
+- symmetric probability aggregation
+- confidence intervals
+- human-in-the-loop routing
+- configurable release policy
+- unit tests
+- CI
+- full-data workflow
+- persisted result artifacts
+
+## 14. 60-second interview version
+
+> I built an LLM evaluation and release-decision platform around the question of when an automated judge can be trusted and when evaluation should remain human-in-the-loop. I used real human pairwise preferences as the outcome, then evaluated multiple LLM judges on the same A/B/tie task. A key reliability test was counterfactual answer-order reversal: I compared each judge's original prediction with its prediction after swapping response A and B, mapped both back to the same frame, and measured position consistency. I then averaged the original and reversed class probabilities to create a more order-robust symmetric prediction. Instead of automating every decision, the system only automates cases that are position-consistent and sufficiently confident, while routing the rest to human review. Finally, I convert evaluator accuracy, stability, automation coverage, and automated-case accuracy into a configurable release gate. The main lesson is that an LLM judge is itself a model and needs validation and failure routing before it can be trusted to evaluate another model.
+
+## 15. Questions you should be able to answer
+
+- Why use human preference labels?
+- Why is raw judge accuracy insufficient?
 - What is position bias?
-- Does longer-response win rate prove verbosity bias?
-- Why use Cohen's kappa in addition to agreement?
-- Why bootstrap the confidence interval?
-- Why aggregate human labels first?
-- Why slice by turn?
-- How would you extend this to safety/factuality/coding evaluations?
-- How would you estimate the cost savings from evaluator automation?
-- How would you monitor an evaluator over time?
+- Why reverse A and B?
+- How do you canonicalize the reversed prediction?
+- Why average original and reversed probabilities?
+- Accuracy vs Cohen's kappa?
+- Why use a bootstrap confidence interval?
+- What is automation coverage?
+- Why not automate low-confidence cases?
+- How would you choose the confidence threshold in a real company?
+- What would happen if human-review capacity were limited?
+- How would you extend this to safety, factuality, coding, or policy compliance evaluations?
+- How would you monitor evaluator drift after model updates?
+
+## 16. What not to claim
+
+Do not claim:
+
+- real production deployment;
+- real company cost savings;
+- universal superiority of one judge;
+- that benchmark agreement guarantees production quality.
+
+The defensible claim is that you built and validated a reproducible **LLM evaluation + human-review routing + release-policy framework** using public human-labeled data.
