@@ -30,12 +30,7 @@ def _softmax(x: np.ndarray) -> np.ndarray:
 
 
 def read_judge_logits(path: str | Path) -> pd.DataFrame:
-    """Read judge JSONL without depending on one fragile column name.
-
-    Public judge files have one row per Chatbot Arena example and a 3-value
-    score/logit vector. This loader discovers that vector defensively and keeps
-    an id column when present.
-    """
+    """Read the public Chatbot-Arena judge JSONL exports."""
     records = []
     with Path(path).open() as f:
         for line in f:
@@ -45,37 +40,33 @@ def read_judge_logits(path: str | Path) -> pd.DataFrame:
         raise ValueError(f"empty judge file: {path}")
 
     df = pd.DataFrame(records)
-    vector_col = None
+    candidates = [
+        ["logit_A", "logit_B", "logit_C"],
+        ["logit_a", "logit_b", "logit_tie"],
+        ["score_a", "score_b", "score_tie"],
+        ["a", "b", "tie"],
+    ]
+    for cols in candidates:
+        if set(cols).issubset(df.columns):
+            values = df[cols].to_numpy(dtype=float)
+            probs = _softmax(values)
+            out = pd.DataFrame(probs, columns=["p_a", "p_b", "p_tie"])
+            if "id" in df:
+                out.insert(0, "id", df["id"].to_numpy())
+            return out
+
+    # Defensive fallback for exports storing a single 3-value score vector.
     for col in df.columns:
         sample = next((v for v in df[col] if isinstance(v, (list, tuple)) and len(v) == 3), None)
         if sample is not None:
-            vector_col = col
-            break
-    if vector_col is None:
-        # Some exports store the three values as separate numeric columns.
-        candidates = [
-            ["a", "b", "tie"],
-            ["logit_a", "logit_b", "logit_tie"],
-            ["score_a", "score_b", "score_tie"],
-        ]
-        for cols in candidates:
-            if set(cols).issubset(df.columns):
-                values = df[cols].to_numpy(dtype=float)
-                probs = _softmax(values)
-                out = pd.DataFrame(probs, columns=["p_a", "p_b", "p_tie"])
-                if "id" in df:
-                    out.insert(0, "id", df["id"].to_numpy())
-                return out
-        raise ValueError(f"could not identify a 3-class judge score vector in {path}; columns={list(df.columns)}")
+            values = np.vstack(df[col].map(np.asarray).to_numpy()).astype(float)
+            probs = _softmax(values)
+            out = pd.DataFrame(probs, columns=["p_a", "p_b", "p_tie"])
+            if "id" in df:
+                out.insert(0, "id", df["id"].to_numpy())
+            return out
 
-    values = np.vstack(df[vector_col].map(np.asarray).to_numpy()).astype(float)
-    # The repository describes these as logits. Softmax is harmless if they are
-    # unnormalized scores and gives comparable confidence values.
-    probs = _softmax(values)
-    out = pd.DataFrame(probs, columns=["p_a", "p_b", "p_tie"])
-    if "id" in df:
-        out.insert(0, "id", df["id"].to_numpy())
-    return out
+    raise ValueError(f"could not identify judge logits in {path}; columns={list(df.columns)}")
 
 
 def canonicalize_reversed(probs: pd.DataFrame) -> pd.DataFrame:
@@ -85,27 +76,22 @@ def canonicalize_reversed(probs: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _align(human: pd.DataFrame, original: pd.DataFrame, reversed_probs: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def _align(human: pd.DataFrame, original: pd.DataFrame, reversed_probs: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     if "id" in human.columns and "id" in original.columns and "id" in reversed_probs.columns:
         base = human[["id", "winner_model_a", "winner_model_b", "winner_tie"]]
         o = base.merge(original, on="id", how="inner", validate="one_to_one")
         r = base.merge(reversed_probs, on="id", how="inner", validate="one_to_one")
         if len(o) != len(r):
-            raise ValueError("original/reversed judge files align to different numbers of human examples")
-        # enforce the same order
+            raise ValueError("original/reversed judge files align to different human-example counts")
         r = r.set_index("id").loc[o["id"]].reset_index()
-        return o, r, base
+        return o, r
     n = min(len(human), len(original), len(reversed_probs))
     if n == 0:
         raise ValueError("no aligned judge examples")
     h = human.iloc[:n].reset_index(drop=True)
     o = pd.concat([h, original.iloc[:n].reset_index(drop=True)], axis=1)
     r = pd.concat([h, reversed_probs.iloc[:n].reset_index(drop=True)], axis=1)
-    return o, r, h
-
-
-def _pred_labels(probs: pd.DataFrame) -> np.ndarray:
-    return LABELS[np.argmax(probs[["p_a", "p_b", "p_tie"]].to_numpy(), axis=1)]
+    return o, r
 
 
 def bootstrap_accuracy_ci(y_true: np.ndarray, y_pred: np.ndarray, n_boot: int = 1000, seed: int = 42) -> tuple[float, float]:
@@ -135,14 +121,8 @@ class JudgeAudit:
         return asdict(self)
 
 
-def audit_judge(
-    human: pd.DataFrame,
-    original_probs: pd.DataFrame,
-    reversed_probs: pd.DataFrame,
-    judge_name: str,
-    confidence_threshold: float = 0.60,
-) -> JudgeAudit:
-    orig, rev_raw, _ = _align(human, original_probs, reversed_probs)
+def audit_judge(human: pd.DataFrame, original_probs: pd.DataFrame, reversed_probs: pd.DataFrame, judge_name: str, confidence_threshold: float = 0.60) -> JudgeAudit:
+    orig, rev_raw = _align(human, original_probs, reversed_probs)
     rev = canonicalize_reversed(rev_raw)
     y = human_labels(orig)
 
@@ -157,18 +137,15 @@ def audit_judge(
     stable = po == pr
     automate = stable & (conf >= confidence_threshold)
 
-    acc_o = float((po == y).mean())
-    acc_r = float((pr == y).mean())
-    acc_s = float((ps == y).mean())
     ci_lo, ci_hi = bootstrap_accuracy_ci(y, ps)
     auto_acc = float((ps[automate] == y[automate]).mean()) if automate.any() else float("nan")
 
     return JudgeAudit(
         judge=judge_name,
         n=int(len(y)),
-        original_accuracy=acc_o,
-        reversed_accuracy=acc_r,
-        symmetric_accuracy=acc_s,
+        original_accuracy=float((po == y).mean()),
+        reversed_accuracy=float((pr == y).mean()),
+        symmetric_accuracy=float((ps == y).mean()),
         position_consistency=float(stable.mean()),
         symmetric_kappa=float(cohen_kappa_score(y, ps)),
         automated_coverage=float(automate.mean()),
