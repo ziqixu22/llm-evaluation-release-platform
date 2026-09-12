@@ -1,7 +1,8 @@
 {
-  "min_judge_agreement": 0.80,
-  "min_cohen_kappa": 0.60,
-  "min_slice_n": 100,
-  "max_position_bias_deviation": 0.05,
-  "max_verbosity_preference_deviation": 0.10
+  "confidence_threshold": 0.60,
+  "min_symmetric_accuracy": 0.40,
+  "min_position_consistency": 0.75,
+  "min_automated_accuracy": 0.55,
+  "min_automated_coverage": 0.20,
+  "decision_principle": "Automate only predictions that remain directionally stable after A/B reversal and clear the confidence threshold; route all other examples to human review."
 }
