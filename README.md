@@ -1,98 +1,121 @@
 # LLM Evaluation & Release Decision Platform
 
-Industry-style AI evaluation project for answering a practical product question:
+Industry-style AI evaluation project built around a practical product question:
 
-> **Can an AI product team trust an automated evaluator enough to make model-release decisions, and where should human review remain in the loop?**
+> **When can an AI product team trust an automated LLM judge, and when should evaluation be escalated to humans?**
 
-The project uses two real public evaluation datasets:
+The project treats evaluation as a **measurement and decision system**, not as a single benchmark score.
 
-- **LMArena Human Preference 55K** — 55K+ real user comparisons across 70+ LLMs for product-quality / preference outcomes.
-- **MT-Bench Human Judgments** — expert human pairwise judgments plus GPT-4 pairwise judgments for measuring LLM-as-a-Judge reliability.
-
-The workflow is:
+## Business loop
 
 ```text
-real human preferences
+real human preference outcomes
         ↓
-quality / ranking analysis
+model-quality / preference analysis
         ↓
-position + verbosity bias audit
+automated judge predictions
         ↓
-expert-human vs GPT-4 judge agreement
+A/B reversal robustness audit
         ↓
-agreement / Cohen's κ / slice reliability
+symmetric judge estimate
         ↓
-release-gate policy
+confidence + consistency routing
         ↓
-automate safe slices + route uncertain slices to humans
+automate trusted cases / human-review uncertain cases
+        ↓
+release gate
 ```
 
-## Why this is a business project
+## Public data
 
-A company evaluating a new chatbot, copilot, or support assistant does not only need a benchmark score. It needs to know:
+### LMArena Human Preference 55K
+Used as a product-quality layer for real pairwise user preferences across many LLMs.
 
-1. whether users actually prefer one model over another;
-2. whether the evaluation itself is biased;
-3. whether an automated judge tracks expert humans closely enough;
-4. whether that reliability holds across relevant slices;
-5. whether a model/prompt change should ship, be blocked, or require human review.
+### Chatbot Arena LLM Judges
+A public 49,938-example single-turn dataset with human A/B/tie labels plus saved logits from multiple open-source LLM judges. The repository also provides **reversed-order judge predictions**, where response A and response B are swapped specifically to measure and mitigate positional sensitivity.
 
-This repository converts those questions into a reproducible evaluation and release-decision system.
+## What the platform evaluates
 
-## Planned verified outputs
+### Product outcome
+- pairwise human preference
+- tie-adjusted win rates
+- Bradley-Terry ranking
+- position and response-length diagnostics
 
-The full-data GitHub Actions workflow writes the final verified numbers to `RESULTS.md` and `results/*.json`.
+### Automated evaluator quality
+For each judge:
+- original-order accuracy vs human labels
+- reversed-order accuracy after mapping back to the original A/B frame
+- symmetric accuracy after averaging original and reversed probabilities
+- position consistency
+- Cohen's kappa
+- bootstrap confidence interval
+
+### Human-in-the-loop routing
+A case is eligible for automated evaluation only when:
+1. the judge gives the same directional decision before and after A/B reversal; and
+2. the symmetric prediction clears a configurable confidence threshold.
+
+Unstable or low-confidence cases are routed to **human review**.
+
+The release layer therefore measures both:
+- **quality** — how often the judge matches human preference;
+- **coverage** — how much evaluation work can safely be automated under the policy.
+
+## Why this is not a toy project
+
+The project goes beyond "compare model accuracy":
+
+- uses real human preference outcomes;
+- validates multiple automated judges against human labels;
+- explicitly tests position robustness with counterfactual A/B reversal;
+- separates evaluator accuracy from evaluator stability;
+- implements confidence-based human escalation;
+- converts metrics into a configurable release policy;
+- includes modular Python code, unit tests, CI, full-data GitHub Actions, persisted results, and a learning/interview guide.
 
 ## Repository structure
 
 ```text
 .
 ├── README.md
-├── RESULTS.md                  # generated from full public data
-├── configs/
-│   └── release_policy.json
-├── scripts/
-│   └── full_analysis.py
+├── RESULTS.md
+├── configs/release_policy.json
+├── scripts/full_analysis.py
 ├── src/llm_eval/
 │   ├── arena.py
+│   ├── arena_judges.py
 │   └── judge.py
 ├── results/
+│   ├── metrics.json
+│   ├── judge_audit.csv
+│   ├── arena_preference_summary.csv
+│   └── arena_bradley_terry.csv
 ├── tests/
-├── docs/
-│   └── learning_guide.md
-├── .github/workflows/
-│   ├── ci.yml
-│   └── full-analysis.yml
-└── pyproject.toml
+├── docs/learning_guide.md
+└── .github/workflows/
+    ├── ci.yml
+    └── full-analysis.yml
 ```
 
-## Methods
+## Reproducibility
 
-### Human preference / model quality
-- pairwise user-preference outcomes
-- tie-adjusted preference rates
-- Bradley-Terry ranking
-- bootstrap confidence intervals
-- ranking / sample-size filters
+```bash
+pip install -e '.[dev]'
+pytest -q
+python scripts/full_analysis.py
+```
 
-### Evaluation-quality audit
-- position-bias analysis
-- response-length / verbosity-bias analysis
-- human-majority aggregation
-- GPT-4 judge vs expert-human agreement
-- Cohen's kappa
-- turn-level reliability slices
+The full-analysis workflow downloads the public data and judge outputs, writes `RESULTS.md` and `results/*`, and uploads them as a GitHub Actions artifact.
 
-### Release decision
-The release policy treats the evaluator as a measurement instrument. A judge can only automate a slice when agreement and reliability thresholds are met; otherwise the slice is routed to human review.
+## Resume-ready framing
 
-## Data provenance
+> Built an LLM evaluation and release-decision platform using real human preference labels and multiple automated judges; audited judge reliability under A/B response reversal, implemented symmetric scoring and confidence/consistency-based human-review routing, and converted evaluator quality and automation coverage into configurable release gates.
 
-- LMArena Human Preference 55K is released under Apache-2.0 and contains 55K+ real-world preference battles across 70+ LLMs.
-- MT-Bench Human Judgments contains 3,355 expert human annotations and 2,400 GPT-4 pairwise judgments for six models on 80 MT-Bench questions.
+## Interview takeaway
 
-Raw data is downloaded during the full-analysis workflow and is not committed to this repository.
+The central lesson is:
 
-## Resume intent
+> **An LLM judge is itself a model. Before using it to approve another model, validate its agreement with humans, robustness to presentation order, uncertainty, and failure-routing policy.**
 
-After the full workflow completes, resume bullets should use only verified metrics from `RESULTS.md`; no accuracy, agreement, or business-impact number is invented in advance.
+No real-company cost savings or production traffic are claimed; the project demonstrates the evaluation methodology and decision architecture with public data.
