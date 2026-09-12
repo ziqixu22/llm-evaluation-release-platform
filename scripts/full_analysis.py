@@ -2,62 +2,74 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.request import urlretrieve
+
+import pandas as pd
 from datasets import load_dataset
 
 from llm_eval.arena import preference_summary, bradley_terry_scores, position_bias, verbosity_bias
-from llm_eval.judge import (
-    align_annotation_level,
-    align_majority_level,
-    agreement_metrics,
-    agreement_without_ties,
-    reliability_by_turn,
-    bootstrap_agreement_ci,
-    release_gate,
-)
+from llm_eval.arena_judges import read_judge_logits, audit_judge, release_decision
 
 OUT = Path("results")
 OUT.mkdir(exist_ok=True)
+TMP = Path(".tmp_judges")
+TMP.mkdir(exist_ok=True)
+
+JUDGES = [
+    "Meta-Llama-3-8B-Instruct",
+    "Mistral-7B-Instruct-v0.1",
+    "Starling-LM-7B-alpha",
+]
+BASE = "https://huggingface.co/datasets/potsawee/chatbot-arena-llm-judges/resolve/main"
 
 
-def pct(x):
-    return f"{100*x:.2f}%"
+def pct(x: float) -> str:
+    return "n/a" if pd.isna(x) else f"{100*x:.2f}%"
+
+
+def download_judge(name: str, reversed_: bool = False) -> Path:
+    folder = "llm-judges-reversed" if reversed_ else "llm-judges"
+    path = TMP / f"{name}{'-reversed' if reversed_ else ''}.jsonl"
+    urlretrieve(f"{BASE}/{folder}/{name}.jsonl", path)
+    return path
 
 
 def main():
+    policy = json.loads(Path("configs/release_policy.json").read_text())
+
+    # Product outcome layer: real user pairwise preferences.
     arena = load_dataset("lmarena-ai/arena-human-preference-55k", split="train").to_pandas()
     pref = preference_summary(arena)
     bt = bradley_terry_scores(arena, min_battles=100)
     pos = position_bias(arena)
     verb = verbosity_bias(arena)
-
-    human_all = load_dataset("lmsys/mt_bench_human_judgments", split="human").to_pandas()
-    gpt4 = load_dataset("lmsys/mt_bench_human_judgments", split="gpt4_pair").to_pandas()
-
-    judge_name = human_all["judge"].astype(str)
-    experts = human_all[judge_name.str.startswith("expert")].copy()
-    authors = human_all[judge_name.str.startswith("author")].copy()
-
-    aligned = align_annotation_level(experts, gpt4)
-    majority = align_majority_level(experts, gpt4)
-    author_aligned = align_annotation_level(authors, gpt4) if len(authors) else authors
-
-    judge = agreement_metrics(aligned)
-    judge_no_ties = agreement_without_ties(aligned)
-    majority_metrics = agreement_metrics(majority)
-    author_metrics = agreement_metrics(author_aligned) if len(author_aligned) else {"n": 0, "agreement": float("nan"), "kappa": float("nan")}
-    judge["agreement_ci_95"] = list(bootstrap_agreement_ci(aligned))
-    by_turn = reliability_by_turn(aligned)
-    gate = release_gate(aligned)
-
     pref.to_csv(OUT / "arena_preference_summary.csv", index=False)
     bt.to_csv(OUT / "arena_bradley_terry.csv", index=False)
-    aligned.to_csv(OUT / "mtbench_expert_aligned.csv", index=False)
-    majority.to_csv(OUT / "mtbench_expert_majority_aligned.csv", index=False)
-    if len(author_aligned):
-        author_aligned.to_csv(OUT / "mtbench_author_aligned.csv", index=False)
+
+    # Measurement layer: human-labelled Arena outcomes vs automated judges.
+    human = load_dataset("potsawee/chatbot-arena-llm-judges", split="train").to_pandas()
+    audits = []
+    decisions = []
+    for name in JUDGES:
+        original = read_judge_logits(download_judge(name, False))
+        reversed_probs = read_judge_logits(download_judge(name, True))
+        audit = audit_judge(
+            human,
+            original,
+            reversed_probs,
+            judge_name=name,
+            confidence_threshold=float(policy["confidence_threshold"]),
+        )
+        audits.append(audit.to_dict())
+        decisions.append(release_decision(audit, policy))
+
+    audit_df = pd.DataFrame(audits).sort_values("symmetric_accuracy", ascending=False)
+    audit_df.to_csv(OUT / "judge_audit.csv", index=False)
+    best = audit_df.iloc[0].to_dict()
+    best_decision = next(d for d in decisions if d["judge"] == best["judge"])
 
     metrics = {
-        "arena": {
+        "human_preference": {
             "rows": int(len(arena)),
             "unique_models": int(len(set(arena["model_a"]).union(arena["model_b"]))),
             "position_bias": pos,
@@ -65,79 +77,67 @@ def main():
             "top_models_by_tie_adjusted_win_rate": pref.head(10).to_dict(orient="records"),
             "top_models_by_bradley_terry": bt.head(10).to_dict(orient="records"),
         },
-        "judge_reliability": {
-            "human_split_rows": int(len(human_all)),
-            "expert_annotations": int(len(experts)),
-            "author_annotations": int(len(authors)),
-            "gpt4_pair_judgments": int(len(gpt4)),
-            "aligned_expert_comparisons": int(len(aligned)),
-            "aligned_majority_comparisons": int(len(majority)),
-            **judge,
-            "without_ties": judge_no_ties,
-            "majority_expert_vs_gpt4": majority_metrics,
-            "author_vs_gpt4": author_metrics,
-            "by_turn": by_turn,
-            "release_gate": gate,
+        "judge_validation": {
+            "human_labeled_rows": int(len(human)),
+            "judges": audits,
+            "release_decisions": decisions,
+            "selected_judge": best["judge"],
+            "selected_release_status": best_decision["status"],
         },
     }
     (OUT / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
-    ci = judge["agreement_ci_95"]
-    top_model = pref.iloc[0] if not pref.empty else None
-    top_bt = bt.iloc[0] if not bt.empty else None
     md = [
         "# Verified Full-Data Results",
         "",
-        "## LMArena human preference outcomes",
+        "## 1. Human preference as the product outcome",
         "",
-        f"- Battles analyzed: **{len(arena):,}**",
-        f"- Unique models: **{metrics['arena']['unique_models']}**",
+        f"- LMArena battles analyzed: **{len(arena):,}**",
+        f"- Unique models represented: **{metrics['human_preference']['unique_models']}**",
         f"- Non-tie model-A win rate: **{pct(pos['model_a_win_rate'])}**",
-        f"- Longer-response win rate among non-tied unequal-length responses: **{pct(verb['longer_response_win_rate'])}**" if verb['n'] else "- Verbosity analysis unavailable in source schema.",
     ]
-    if top_model is not None:
-        md += [f"- Highest observed tie-adjusted win rate: **{top_model['model']} ({pct(top_model['tie_adjusted_win_rate'])}, n={int(top_model['battles']):,})**"]
-    if top_bt is not None:
-        md += [f"- Highest Bradley-Terry score after requiring 100+ battles: **{top_bt['model']}**"]
+    if verb.get("n"):
+        md.append(f"- Longer-response win rate among eligible non-tied pairs: **{pct(verb['longer_response_win_rate'])}**")
 
     md += [
         "",
-        "## LLM-as-a-Judge reliability — MT-Bench",
+        "## 2. Automated judge validation on human-labelled Arena outcomes",
         "",
-        f"- Human split rows: **{len(human_all):,}** = **{len(experts):,} expert** + **{len(authors):,} author/self-evaluation** labels",
-        f"- GPT-4 pairwise judgments: **{len(gpt4):,}**",
-        f"- Aligned expert-human vs GPT-4 comparisons: **{len(aligned):,}**",
-        f"- Exact expert-human agreement: **{pct(judge['agreement'])}** (95% bootstrap CI **{pct(ci[0])}–{pct(ci[1])}**) ",
-        f"- Expert agreement excluding ties: **{pct(judge_no_ties['agreement'])}**",
-        f"- Cohen's kappa: **{judge['kappa']:.3f}**",
-        f"- Majority-expert vs GPT-4 agreement: **{pct(majority_metrics['agreement'])}**",
+        f"Human-labelled examples: **{len(human):,}**",
+        "",
+        "| Judge | Symmetric acc. | Position consistency | Auto coverage | Auto acc. | Human review | Release |",
+        "|---|---:|---:|---:|---:|---:|---|",
     ]
-    if author_metrics["n"]:
-        md += [f"- Author/self-evaluation vs GPT-4 agreement (diagnostic only): **{pct(author_metrics['agreement'])}**, n={author_metrics['n']:,}"]
-    md += [
-        "",
-        "### Reliability by conversation turn",
-        "",
-    ]
-    for r in by_turn:
-        md += [f"- Turn {r['turn']}: **{pct(r['agreement'])} agreement**, κ={r['kappa']:.3f}, n={r['n']:,}"]
+    decisions_by_name = {d["judge"]: d for d in decisions}
+    for r in audit_df.to_dict(orient="records"):
+        d = decisions_by_name[r["judge"]]
+        md.append(
+            f"| {r['judge']} | {pct(r['symmetric_accuracy'])} | {pct(r['position_consistency'])} | "
+            f"{pct(r['automated_coverage'])} | {pct(r['automated_accuracy'])} | {pct(r['human_review_rate'])} | {d['status']} |"
+        )
 
     md += [
         "",
-        "## Release decision",
+        "## 3. Release decision",
         "",
-        f"Automated release gate: **{'PASS' if gate['automated_release_gate'] else 'HUMAN REVIEW REQUIRED'}**",
+        f"Selected candidate judge: **{best['judge']}**",
+        f"Release status: **{best_decision['status']}**",
         "",
-        "The gate requires agreement, chance-adjusted reliability, and minimum sample size on independent expert labels. Failing slices are routed to expert review.",
+        "The platform does not treat a raw judge score as sufficient evidence for automation. It first checks whether the judge remains directionally stable when answer order is reversed, then averages original/reversed probabilities to reduce position sensitivity. Only stable, sufficiently confident cases are eligible for automation; the rest are routed to human review.",
         "",
-        "## Business takeaways",
+        "## 4. Business takeaways",
         "",
-        "1. Human preference is the product outcome; benchmark/judge scores are measurement tools.",
-        "2. Label provenance matters: independent expert labels and author/self-evaluations answer different questions and should not be pooled blindly.",
-        "3. Pair orientation must be canonicalized before comparing evaluators; evaluation pipelines can create false disagreement if measurement logic is wrong.",
-        "4. Automated judges need human validation, uncertainty estimates, and slice checks before they can approve model releases.",
-        "5. Position and verbosity effects are measurement risks and should be audited before interpreting rankings.",
-        "6. Hybrid evaluation is safer than blind automation: automate trusted slices and route weak/uncertain slices to humans.",
+        "1. Human preference is the product outcome; automated judges are measurement tools.",
+        "2. Judge quality should be evaluated on both correctness and robustness to answer order.",
+        "3. Averaging original and reversed predictions reduces sensitivity to presentation order.",
+        "4. A hybrid system can trade automation coverage for higher reliability by escalating unstable or low-confidence cases.",
+        "5. Release gates should make failure visible instead of silently approving a weak evaluator.",
+        "",
+        "## 5. What this project does not claim",
+        "",
+        "- No claim that one judge is universally best across every task domain.",
+        "- No claim that benchmark agreement is equivalent to real production quality.",
+        "- No fabricated business savings; the project demonstrates a reproducible evaluation and routing framework.",
     ]
     Path("RESULTS.md").write_text("\n".join(md))
     print(json.dumps(metrics, indent=2))
