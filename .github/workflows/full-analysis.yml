@@ -1,0 +1,22 @@
+name: full-analysis
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e .
+      - run: python scripts/full_analysis.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llm-evaluation-results
+          path: |
+            RESULTS.md
+            results/
