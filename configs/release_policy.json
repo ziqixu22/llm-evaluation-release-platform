@@ -1,0 +1,7 @@
+{
+  "min_judge_agreement": 0.80,
+  "min_cohen_kappa": 0.60,
+  "min_slice_n": 100,
+  "max_position_bias_deviation": 0.05,
+  "max_verbosity_preference_deviation": 0.10
+}
