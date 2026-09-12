@@ -1,0 +1,63 @@
+{
+  "human_preference": {
+    "rows": 57477,
+    "unique_models": 64,
+    "model_a_win_rate_non_tie": 0.5051868264679222,
+    "longer_response_win_rate": 0.6162215378401575,
+    "top_tie_adjusted_win_rate": {
+      "model": "gpt-4-1106-preview",
+      "battles": 7387,
+      "tie_adjusted_win_rate": 0.6885745228103425
+    },
+    "top_bradley_terry": {
+      "model": "gpt-4-0125-preview",
+      "bt_score": 1.7962295953000398
+    }
+  },
+  "judge_validation": {
+    "human_labeled_rows": 49938,
+    "judges": [
+      {
+        "judge": "Starling-LM-7B-alpha",
+        "original_accuracy": 0.4593696183267251,
+        "reversed_accuracy": 0.45966999078857784,
+        "symmetric_accuracy": 0.4743682165885698,
+        "position_consistency": 0.6637430413713004,
+        "symmetric_kappa": 0.20069182042065636,
+        "automated_coverage": 0.6099963955304578,
+        "automated_accuracy": 0.5347646247784125,
+        "human_review_rate": 0.3900036044695422,
+        "accuracy_ci_95": [0.46976250550682846, 0.4784738075213264],
+        "release_status": "HUMAN_REVIEW_REQUIRED"
+      },
+      {
+        "judge": "Meta-Llama-3-8B-Instruct",
+        "original_accuracy": 0.4528214986583363,
+        "reversed_accuracy": 0.4542432616444391,
+        "symmetric_accuracy": 0.46918178541391325,
+        "position_consistency": 0.633966117986303,
+        "symmetric_kappa": 0.1921677687775345,
+        "automated_coverage": 0.6183867996315431,
+        "automated_accuracy": 0.5284802953272238,
+        "human_review_rate": 0.3816132003684569,
+        "accuracy_ci_95": [0.46487644679402457, 0.47364932516320235],
+        "release_status": "HUMAN_REVIEW_REQUIRED"
+      },
+      {
+        "judge": "Mistral-7B-Instruct-v0.1",
+        "original_accuracy": 0.43115463174336177,
+        "reversed_accuracy": 0.43007329088069207,
+        "symmetric_accuracy": 0.4402659297528936,
+        "position_consistency": 0.6728743642116224,
+        "symmetric_kappa": 0.14755280299284812,
+        "automated_coverage": 0.5638591853898834,
+        "automated_accuracy": 0.511151360181831,
+        "human_review_rate": 0.43614081461011656,
+        "accuracy_ci_95": [0.4358364371821058, 0.44481306820457367],
+        "release_status": "HUMAN_REVIEW_REQUIRED"
+      }
+    ],
+    "selected_judge": "Starling-LM-7B-alpha",
+    "selected_release_status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
