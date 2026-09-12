@@ -1,5 +1,12 @@
 name: full-analysis
 on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/full_analysis.py
+      - src/llm_eval/**
+      - configs/release_policy.json
+      - .github/workflows/full-analysis.yml
   pull_request:
   workflow_dispatch:
 
