@@ -119,3 +119,7 @@ The central lesson is:
 > **An LLM judge is itself a model. Before using it to approve another model, validate its agreement with humans, robustness to presentation order, uncertainty, and failure-routing policy.**
 
 No real-company cost savings or production traffic are claimed; the project demonstrates the evaluation methodology and decision architecture with public data.
+
+## Learn it for interviews
+
+Use the project-specific [Interview Guide](docs/INTERVIEW_GUIDE.md) for a 60-second walkthrough, key concepts, likely questions, reproducible study steps, and the honest boundary of the work.
